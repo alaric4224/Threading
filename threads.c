@@ -74,10 +74,12 @@ struct itimerval* salarm;
 struct sigaction* catch;
 struct thread_control_block *threads[MAX_THREADS + 1];
 struct bar *barriers[MAX_THREADS];
+struct mut *mutexes[MAX_THREADS];
 static int current_thread_id = 0;
 static int signore = 0; //Used to prevent scheduler interrupting thread creation/destruction/inspection, as bad stuff could result.
 static int threadcount = 1;
 static int barrier_count = 0;
+static int mutex_count = 12;
 
 // to supress compiler error
 static void schedule(int signal) __attribute__((unused));
@@ -228,11 +230,13 @@ pthread_t pthread_self(void)
 int pthread_mutex_init(pthread_mutex_t *restrict mutex, const pthread_mutexattr_t *restrict attr)
 {
     signore = 1;
-    mutex = (pthread_mutex_t *) malloc(sizeof(pthread_mutex_t));
+    //mutex = (pthread_mutex_t *) malloc(sizeof(pthread_mutex_t));
+    mutexes[mutex_count] = malloc(sizeof(struct mut));
     
+    mutexes[mutex_count]->numwait = 0;
     mutex->__data.__lock = 0;
-    mutex->__data.__list.__next = malloc(sizeof(struct mut));
-    ((struct mut*) mutex->__data.__list.__next)->numwait = 0;
+    mutex->__data.__count = mutex_count;
+    mutex_count++;
     
     signore = 0;
     return 0;
@@ -242,9 +246,8 @@ int pthread_mutex_lock(pthread_mutex_t *mutex)
 {
     signore = 1;
     if(mutex->__data.__lock == 1){
-        struct mut* tpo = (struct mut*) mutex->__data.__list.__next;
-        (tpo->waiting)[tpo->numwait] = pthread_self();
-        tpo->numwait++;
+        mutexes[mutex->__data.__count]->waiting[mutexes[mutex->__data.__count]->numwait] = pthread_self();
+        mutexes[mutex->__data.__count]->numwait++;
         threads[pthread_self()]->stat = TS_BLOCKED;
         signore = 0;
         schedule(SIGALRM);
@@ -259,11 +262,9 @@ int pthread_mutex_lock(pthread_mutex_t *mutex)
 int pthread_mutex_unlock(pthread_mutex_t *mutex)
 {
     signore = 1;
-    if(((struct mut*) mutex->__data.__list.__next)->numwait != 0){
-        for(int i = 0; i < ((struct mut*) mutex->__data.__list.__next)->numwait; i++){
-            threads[((struct mut*) mutex->__data.__list.__next)->waiting[i]]->stat = TS_READY;
-        }
-        ((struct mut*) mutex->__data.__list.__next)->numwait = 0;
+    if(mutexes[mutex->__data.__count]->numwait > 0){
+        mutexes[mutex->__data.__count]->numwait--;
+        threads[mutexes[mutex->__data.__count]->waiting[mutexes[mutex->__data.__count]->numwait]]->stat = TS_READY;
     }
     mutex->__data.__lock = 0;
     signore = 0;
@@ -273,7 +274,7 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex)
 int pthread_mutex_destroy(pthread_mutex_t *mutex)
 {
     signore = 1;
-    //free(((struct mut*) mutex->__align));
+    free(mutexes[mutex->__data.__count]);
     //free(mutex);
     signore = 0;
     return 0;
@@ -283,7 +284,7 @@ int pthread_barrier_init(pthread_barrier_t *restrict barrier, const pthread_barr
 {    
     if(count == 0){return EINVAL;}
     signore = 1;
-    barrier = (pthread_barrier_t *) malloc(sizeof(pthread_barrier_t));
+    //barrier = (pthread_barrier_t *) malloc(sizeof(pthread_barrier_t));
     barriers[barrier_count] = (struct bar *) malloc(sizeof(struct bar));
     barrier->__align = barrier_count;
     barriers[barrier_count]->id = barrier_count;
@@ -298,7 +299,7 @@ int pthread_barrier_wait(pthread_barrier_t *barrier)
 {
     int is_final_caller = 0;
     signore = 1;
-    if(barriers[barrier->__align]->numwait + 1 == barriers[barrier->__align]->cap){
+    if(barriers[barrier->__align]->numwait + 1 >= barriers[barrier->__align]->cap){
         is_final_caller = 1;
         for(int i = 0; i < barriers[barrier->__align]->numwait; i++){
             threads[barriers[barrier->__align]->waiting[i]]->stat = TS_READY;
@@ -320,8 +321,8 @@ int pthread_barrier_wait(pthread_barrier_t *barrier)
 int pthread_barrier_destroy(pthread_barrier_t *barrier)
 {
     signore = 1;
-    //free(barriers[barrier->__align]);
-    //free(barrier);
+    free(barriers[barrier->__align]);
+    free(barrier);
     signore = 0;
     return 0;
 }
